@@ -6,6 +6,7 @@ import pandas as pd
 from typing import List, Tuple
 from streamlit_folium import st_folium
 import folium
+from geopy.geocoders import Nominatim
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -21,6 +22,20 @@ def calculate_route_distance(route, distance_matrix):
     for i in range(len(route)):
         total += distance_matrix[route[i]][route[(i+1)%len(route)]]
     return total
+
+def reverse_geocode(lat, lon):
+    geolocator = Nominatim(user_agent="route_optimizer_app")
+    try:
+        location = geolocator.reverse((lat, lon), language='en', addressdetails=True, timeout=10)
+        if location and 'address' in location.raw:
+            address = location.raw['address']
+            for key in ['city', 'town', 'village', 'hamlet', 'state', 'county', 'country']:
+                if key in address:
+                    return address[key]
+        # If no name found, return coordinates
+        return f"({lat:.4f}, {lon:.4f})"
+    except Exception:
+        return f"({lat:.4f}, {lon:.4f})"
 
 def main():
     st.title("Route Optimization using Genetic Algorithm")
@@ -83,7 +98,7 @@ def main():
     if map_data and map_data['last_clicked']:
         lat = map_data['last_clicked']['lat']
         lon = map_data['last_clicked']['lng']
-        city_name = f"City {len(st.session_state['map_cities'])+1}"
+        city_name = reverse_geocode(lat, lon)
         # Prevent duplicate points
         if not any(abs(city['lat']-lat)<1e-6 and abs(city['lon']-lon)<1e-6 for city in st.session_state['map_cities']):
             st.session_state['map_cities'].append({'name': city_name, 'lat': lat, 'lon': lon})
@@ -275,7 +290,20 @@ def main():
                 st.download_button("Download Fitness Plot", f, file_name="fitness_plot.png")
             st.write("### Route Details")
             route_cities = [cities[i][0] for i in best_route]
-            st.write(" → ".join(route_cities))
+            n = len(route_cities)
+            # Build table header
+            table_md = "| Stop | City Name | Previous City | Next City |\n"
+            table_md += "|------|-----------|---------------|-----------|\n"
+            for idx, city in enumerate(route_cities):
+                prev_city = route_cities[idx-1] if idx > 0 else "-"
+                next_city = route_cities[idx+1] if idx < n-1 else "-"
+                stop_label = f"{idx+1}"
+                if idx == 0:
+                    stop_label += " (Start)"
+                if idx == n-1:
+                    stop_label += " (End)"
+                table_md += f"| {stop_label} | {city} | {prev_city} | {next_city} |\n"
+            st.markdown(table_md)
     else:
         st.info("Please upload a CSV file with city data (columns: city, latitude, longitude), use the example dataset, or add cities on the map above.")
 
