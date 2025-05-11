@@ -7,6 +7,10 @@ from typing import List, Tuple
 from streamlit_folium import st_folium
 import folium
 from geopy.geocoders import Nominatim
+from sklearn.cluster import KMeans
+import random
+from scipy.spatial import ConvexHull
+import numpy as np
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -45,6 +49,10 @@ def main():
     
     # Sidebar for parameters
     st.sidebar.header("Parameters")
+    
+    # Clustering toggle
+    use_clustering = st.sidebar.checkbox("Cluster cities before optimization (ML + GA)", value=False)
+    n_clusters = st.sidebar.slider("Number of Clusters", min_value=2, max_value=6, value=3) if use_clustering else None
     
     # File uploader
     uploaded_file = st.sidebar.file_uploader("Upload Cities CSV", type=['csv'])
@@ -151,6 +159,20 @@ def main():
 
     if cities:
         st.write("### Route Optimization")
+        clustered_cities = None
+        cluster_labels = None
+        cluster_centers = None
+        if use_clustering and len(cities) >= n_clusters:
+            # Prepare data for clustering
+            coords = [[city[1], city[2]] for city in cities]  # [lat, lon]
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+            cluster_labels = kmeans.fit_predict(coords)
+            cluster_centers = kmeans.cluster_centers_
+            # Group cities by cluster
+            clustered_cities = [[] for _ in range(n_clusters)]
+            for idx, label in enumerate(cluster_labels):
+                clustered_cities[label].append((cities[idx][0], cities[idx][1], cities[idx][2]))
+            st.info(f"Cities clustered into {n_clusters} groups. Each cluster will be optimized separately, then clusters will be connected.")
         if st.button("Optimize Route"):
             with st.spinner("Optimizing route..."):
                 ga = GeneticAlgorithm(
@@ -158,37 +180,123 @@ def main():
                     tournament_size=3
                 )
                 start_time = time.time()
-                if use_real_distance and distance_matrix is not None:
-                    best_route, best_distance, performance_history = ga.optimize(
-                        cities=cities,
+                if use_clustering and clustered_cities is not None and len(clustered_cities) == n_clusters:
+                    # 1. Solve TSP within each cluster
+                    intra_routes = []
+                    intra_distances = []
+                    intra_analytics = []
+                    for cluster in clustered_cities:
+                        if len(cluster) == 1:
+                            intra_routes.append([0])
+                            intra_distances.append(0)
+                            intra_analytics.append(calculate_analytics(0, avg_speed, fuel_efficiency, fuel_price))
+                        else:
+                            route, dist, _ = ga.optimize(
+                                cities=cluster,
+                                pop_size=pop_size,
+                                generations=generations,
+                                fitness_func=calculate_total_distance
+                            )
+                            intra_routes.append(route)
+                            intra_distances.append(dist)
+                            intra_analytics.append(calculate_analytics(dist, avg_speed, fuel_efficiency, fuel_price))
+                    # 2. Solve TSP between cluster centroids
+                    centroids = [(f"Cluster {i+1}", cluster_centers[i][0], cluster_centers[i][1]) for i in range(n_clusters)]
+                    inter_route, inter_dist, _ = ga.optimize(
+                        cities=centroids,
                         pop_size=pop_size,
                         generations=generations,
-                        fitness_func=lambda route, _: calculate_route_distance(route, distance_matrix)
+                        fitness_func=calculate_total_distance
                     )
-                else:
-                    best_route, best_distance, performance_history = ga.optimize(
+                    # 3. Combine intra-cluster routes in inter-cluster order
+                    full_route = []
+                    cluster_city_indices = []
+                    for cluster_idx in inter_route:
+                        cluster = clustered_cities[cluster_idx]
+                        route = intra_routes[cluster_idx]
+                        # Map intra-cluster route indices to global city indices
+                        global_indices = [cities.index(cluster[i]) for i in route]
+                        full_route.extend(global_indices)
+                        cluster_city_indices.append(global_indices)
+                    # 4. Calculate total distance for the full route
+                    if use_real_distance and distance_matrix is not None:
+                        best_distance = calculate_route_distance(full_route, distance_matrix)
+                    else:
+                        best_distance = calculate_total_distance(full_route, cities)
+                    best_route = full_route
+                    performance_history = []  # Not meaningful for combined route
+                    time_taken = time.time() - start_time
+                    save_route_plot(best_route, cities)
+                    save_fitness_plot(performance_history)
+                    analytics = calculate_analytics(
+                        total_distance=best_distance,
+                        avg_speed=avg_speed,
+                        fuel_efficiency=fuel_efficiency,
+                        fuel_price=fuel_price
+                    )
+                    # Also run non-clustered GA for comparison
+                    best_route_nc, best_distance_nc, _ = ga.optimize(
                         cities=cities,
                         pop_size=pop_size,
                         generations=generations,
                         fitness_func=calculate_total_distance
                     )
-                time_taken = time.time() - start_time
-                save_route_plot(best_route, cities)
-                save_fitness_plot(performance_history)
-                analytics = calculate_analytics(
-                    total_distance=best_distance,
-                    avg_speed=avg_speed,
-                    fuel_efficiency=fuel_efficiency,
-                    fuel_price=fuel_price
-                )
-                # Store results in session state
-                st.session_state['best_route'] = best_route
-                st.session_state['best_distance'] = best_distance
-                st.session_state['performance_history'] = performance_history
-                st.session_state['cities'] = cities
-                st.session_state['analytics'] = analytics
-                st.session_state['time_taken'] = time_taken
-                st.session_state['route_just_optimized'] = True
+                    analytics_nc = calculate_analytics(
+                        total_distance=best_distance_nc,
+                        avg_speed=avg_speed,
+                        fuel_efficiency=fuel_efficiency,
+                        fuel_price=fuel_price
+                    )
+                    # Store results in session state
+                    st.session_state['best_route'] = best_route
+                    st.session_state['best_distance'] = best_distance
+                    st.session_state['performance_history'] = performance_history
+                    st.session_state['cities'] = cities
+                    st.session_state['analytics'] = analytics
+                    st.session_state['time_taken'] = time_taken
+                    st.session_state['route_just_optimized'] = True
+                    st.session_state['cluster_labels'] = cluster_labels
+                    st.session_state['intra_analytics'] = intra_analytics
+                    st.session_state['best_route_nc'] = best_route_nc
+                    st.session_state['best_distance_nc'] = best_distance_nc
+                    st.session_state['analytics_nc'] = analytics_nc
+                else:
+                    if use_real_distance and distance_matrix is not None:
+                        best_route, best_distance, performance_history = ga.optimize(
+                            cities=cities,
+                            pop_size=pop_size,
+                            generations=generations,
+                            fitness_func=lambda route, _: calculate_route_distance(route, distance_matrix)
+                        )
+                    else:
+                        best_route, best_distance, performance_history = ga.optimize(
+                            cities=cities,
+                            pop_size=pop_size,
+                            generations=generations,
+                            fitness_func=calculate_total_distance
+                        )
+                    time_taken = time.time() - start_time
+                    save_route_plot(best_route, cities)
+                    save_fitness_plot(performance_history)
+                    analytics = calculate_analytics(
+                        total_distance=best_distance,
+                        avg_speed=avg_speed,
+                        fuel_efficiency=fuel_efficiency,
+                        fuel_price=fuel_price
+                    )
+                    # Store results in session state
+                    st.session_state['best_route'] = best_route
+                    st.session_state['best_distance'] = best_distance
+                    st.session_state['performance_history'] = performance_history
+                    st.session_state['cities'] = cities
+                    st.session_state['analytics'] = analytics
+                    st.session_state['time_taken'] = time_taken
+                    st.session_state['route_just_optimized'] = True
+                    st.session_state['cluster_labels'] = None
+                    st.session_state['intra_analytics'] = None
+                    st.session_state['best_route_nc'] = None
+                    st.session_state['best_distance_nc'] = None
+                    st.session_state['analytics_nc'] = None
 
         # Show results if available in session state
         if 'best_route' in st.session_state and st.session_state['best_route'] is not None:
@@ -198,6 +306,11 @@ def main():
             cities = st.session_state['cities']
             analytics = st.session_state['analytics']
             time_taken = st.session_state.get('time_taken', None)
+            cluster_labels = st.session_state.get('cluster_labels', None)
+            intra_analytics = st.session_state.get('intra_analytics', None)
+            best_route_nc = st.session_state.get('best_route_nc', None)
+            best_distance_nc = st.session_state.get('best_distance_nc', None)
+            analytics_nc = st.session_state.get('analytics_nc', None)
             st.success("Optimization complete!")
             col1, col2 = st.columns(2)
             with col1:
@@ -210,6 +323,22 @@ def main():
             st.write(f"**Estimated Time:** {analytics['estimated_time']:.2f} hours")
             st.write(f"**Fuel Consumption:** {analytics['fuel_consumption']:.2f} liters")
             st.write(f"**Estimated Cost:** ${analytics['estimated_cost']:.2f}")
+            # Show analytics per cluster if available
+            if cluster_labels is not None and intra_analytics is not None:
+                st.write("### Analytics Per Cluster")
+                table_md = "| Cluster | Distance (km) | Time (h) | Fuel (l) | Cost ($) |\n"
+                table_md += "|---------|--------------|----------|----------|----------|\n"
+                for i, a in enumerate(intra_analytics):
+                    table_md += f"| {i+1} | {a['total_distance']:.2f} | {a['estimated_time']:.2f} | {a['fuel_consumption']:.2f} | {a['estimated_cost']:.2f} |\n"
+                st.markdown(table_md)
+            # Show comparison with non-clustered GA
+            if cluster_labels is not None and best_distance_nc is not None and analytics_nc is not None:
+                st.write("### Clustered vs. Non-Clustered Comparison")
+                comp_md = "| Method | Distance (km) | Time (h) | Fuel (l) | Cost ($) |\n"
+                comp_md += "|--------|--------------|----------|----------|----------|\n"
+                comp_md += f"| Clustered | {analytics['total_distance']:.2f} | {analytics['estimated_time']:.2f} | {analytics['fuel_consumption']:.2f} | {analytics['estimated_cost']:.2f} |\n"
+                comp_md += f"| Non-Clustered | {analytics_nc['total_distance']:.2f} | {analytics_nc['estimated_time']:.2f} | {analytics_nc['fuel_consumption']:.2f} | {analytics_nc['estimated_cost']:.2f} |\n"
+                st.markdown(comp_md)
             st.write("### Interactive Route Map")
             # Create a new Folium map centered on the mean location
             mean_lat = sum(city[1] for city in cities) / len(cities)
@@ -226,7 +355,53 @@ def main():
                         opacity=0.3
                     ).add_to(route_map)
 
+            # Draw clusters with different colors and boundaries if clustering is enabled
+            cluster_colors = ['red', 'blue', 'green', 'purple', 'orange', 'darkred', 'lightblue', 'darkgreen']
+            if use_clustering and cluster_labels is not None:
+                for cidx in range(n_clusters):
+                    cluster_points = np.array([[city[1], city[2]] for idx, city in enumerate(cities) if cluster_labels[idx] == cidx])
+                    color = cluster_colors[cidx % len(cluster_colors)]
+                    # Draw convex hull (boundary) if enough points
+                    if len(cluster_points) >= 3:
+                        hull = ConvexHull(cluster_points)
+                        hull_points = cluster_points[hull.vertices]
+                        folium.Polygon(locations=[(lat, lon) for lat, lon in hull_points], color=color, fill=True, fill_opacity=0.1).add_to(route_map)
+                for idx, city in enumerate(cities):
+                    color = cluster_colors[cluster_labels[idx] % len(cluster_colors)]
+                    folium.CircleMarker(
+                        location=(city[1], city[2]),
+                        radius=8,
+                        color=color,
+                        fill=True,
+                        fill_color=color,
+                        fill_opacity=0.7,
+                        popup=f"{city[0]} (Cluster {cluster_labels[idx]+1})"
+                    ).add_to(route_map)
+            else:
+                # Highlight cities in the optimized route
+                for idx, i in enumerate(best_route):
+                    folium.CircleMarker(
+                        location=(cities[i][1], cities[i][2]),
+                        radius=8,
+                        color='blue',
+                        fill=True,
+                        fill_color='yellow',
+                        fill_opacity=0.9,
+                        popup=f"{cities[i][0]} (Stop {idx+1})"
+                    ).add_to(route_map)
+
             # Draw the optimized route (real driving route if possible)
+            if use_clustering and best_route_nc is not None:
+                # Draw non-clustered route for comparison (dashed blue)
+                route_coords_nc = [(cities[i][1], cities[i][2]) for i in best_route_nc] + [(cities[best_route_nc[0]][1], cities[best_route_nc[0]][2])]
+                folium.PolyLine(
+                    locations=route_coords_nc,
+                    color='blue',
+                    weight=3,
+                    opacity=0.5,
+                    dash_array='10,10',
+                    tooltip='Non-Clustered Route'
+                ).add_to(route_map)
             if use_real_distance and api_key:
                 for idx in range(len(best_route)):
                     start_idx = best_route[idx]
@@ -257,18 +432,6 @@ def main():
                     color='red',
                     weight=5,
                     opacity=0.8
-                ).add_to(route_map)
-
-            # Highlight cities in the optimized route
-            for idx, i in enumerate(best_route):
-                folium.CircleMarker(
-                    location=(cities[i][1], cities[i][2]),
-                    radius=8,
-                    color='blue',
-                    fill=True,
-                    fill_color='yellow',
-                    fill_opacity=0.9,
-                    popup=f"{cities[i][0]} (Stop {idx+1})"
                 ).add_to(route_map)
 
             # Add city names for all cities

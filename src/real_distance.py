@@ -17,7 +17,7 @@ def get_distance_matrix(coords, api_key):
         metrics=['distance'],
         units='km'
     )
-    return np.array(matrix['distances'])
+    return np.array(matrix['distances']) 
 
 
 def get_route_geometry(coord_from, coord_to, api_key):
