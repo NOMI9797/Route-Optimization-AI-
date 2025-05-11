@@ -14,6 +14,7 @@ from src.genetic_algorithm import GeneticAlgorithm
 from src.route_utils import load_cities, calculate_total_distance
 from src.visualization import save_route_plot, save_fitness_plot
 from src.real_distance import get_distance_matrix
+from src.analytics import calculate_analytics
 
 def calculate_route_distance(route, distance_matrix):
     total = 0
@@ -60,6 +61,12 @@ def main():
         value=100,
         step=50
     )
+
+    # Analytics Parameters
+    st.sidebar.subheader("Analytics Parameters")
+    avg_speed = st.sidebar.number_input("Average Speed (km/h)", min_value=10, max_value=200, value=60)
+    fuel_efficiency = st.sidebar.number_input("Fuel Efficiency (km/l)", min_value=1.0, max_value=50.0, value=15.0)
+    fuel_price = st.sidebar.number_input("Fuel Price ($/l)", min_value=0.1, max_value=10.0, value=1.0)
 
     # --- Interactive Map for City Editing ---
     if 'map_cities' not in st.session_state:
@@ -159,6 +166,18 @@ def main():
                     st.metric("Total Distance", f"{best_distance:.2f} km")
                 with col2:
                     st.metric("Time Taken", f"{time_taken:.2f} seconds")
+                # --- Analytics Calculation and Display ---
+                analytics = calculate_analytics(
+                    total_distance=best_distance,
+                    avg_speed=avg_speed,
+                    fuel_efficiency=fuel_efficiency,
+                    fuel_price=fuel_price
+                )
+                st.write("### Route Analytics")
+                st.write(f"**Total Distance:** {analytics['total_distance']:.2f} km")
+                st.write(f"**Estimated Time:** {analytics['estimated_time']:.2f} hours")
+                st.write(f"**Fuel Consumption:** {analytics['fuel_consumption']:.2f} liters")
+                st.write(f"**Estimated Cost:** ${analytics['estimated_cost']:.2f}")
                 st.write("### Optimized Route")
                 st.image("results/best_route.png")
                 with open("results/best_route.png", "rb") as f:
