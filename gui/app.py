@@ -4,6 +4,8 @@ import os
 import time
 import pandas as pd
 from typing import List, Tuple
+from streamlit_folium import st_folium
+import folium
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -15,7 +17,7 @@ from src.visualization import save_route_plot, save_fitness_plot
 def main():
     st.title("Route Optimization using Genetic Algorithm")
     st.write("""
-    Upload a CSV file with columns: `city,latitude,longitude` or use the example dataset. Adjust the parameters and click 'Optimize Route' to find the shortest path.
+    Upload a CSV file with columns: `city,latitude,longitude` or use the example dataset. You can also add cities interactively on the map below. Adjust the parameters and click 'Optimize Route' to find the shortest path.
     """)
     
     # Sidebar for parameters
@@ -49,9 +51,39 @@ def main():
         step=50
     )
 
-    # Load cities from uploaded file, example, or default
+    # --- Interactive Map for City Editing ---
+    if 'map_cities' not in st.session_state:
+        st.session_state['map_cities'] = []
+
+    st.write("### Add Cities on Map")
+    m = folium.Map(location=[39.8283, -98.5795], zoom_start=4)  # Centered on USA
+    # Add existing markers
+    for city in st.session_state['map_cities']:
+        folium.Marker([city['lat'], city['lon']], popup=city['name']).add_to(m)
+    # Add map to Streamlit
+    map_data = st_folium(m, width=700, height=500)
+    # Add city on click
+    if map_data and map_data['last_clicked']:
+        lat = map_data['last_clicked']['lat']
+        lon = map_data['last_clicked']['lng']
+        city_name = f"City {len(st.session_state['map_cities'])+1}"
+        # Prevent duplicate points
+        if not any(abs(city['lat']-lat)<1e-6 and abs(city['lon']-lon)<1e-6 for city in st.session_state['map_cities']):
+            st.session_state['map_cities'].append({'name': city_name, 'lat': lat, 'lon': lon})
+    # Show current city list
+    st.write("#### Current Cities")
+    for i, city in enumerate(st.session_state['map_cities']):
+        st.write(f"{i+1}. {city['name']} ({city['lat']:.4f}, {city['lon']:.4f})")
+    if st.button("Clear All Cities"):
+        st.session_state['map_cities'] = []
+
+    # --- Load cities from uploaded file, example, or default ---
     cities = None
-    if uploaded_file is not None and not use_example:
+    if st.session_state['map_cities']:
+        # Use cities from map if present
+        cities = [(city['name'], city['lat'], city['lon']) for city in st.session_state['map_cities']]
+        st.info(f"Using {len(cities)} cities from the interactive map.")
+    elif uploaded_file is not None and not use_example:
         with open('data/cities.csv', 'wb') as f:
             f.write(uploaded_file.getvalue())
         try:
@@ -109,7 +141,7 @@ def main():
                 route_cities = [cities[i][0] for i in best_route]
                 st.write(" → ".join(route_cities))
     else:
-        st.info("Please upload a CSV file with city data (columns: city, latitude, longitude) or use the example dataset.")
+        st.info("Please upload a CSV file with city data (columns: city, latitude, longitude), use the example dataset, or add cities on the map above.")
 
 if __name__ == "__main__":
     main() 
