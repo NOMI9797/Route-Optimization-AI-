@@ -42,7 +42,7 @@ def reverse_geocode(lat, lon):
         return f"({lat:.4f}, {lon:.4f})"
 
 def main():
-    st.title("Route Optimization using Genetic Algorithm")
+    st.title("Route Optimizer")
     st.write("""
     Upload a CSV file with columns: `city,latitude,longitude` or use the example dataset. You can also add cities interactively on the map below. Adjust the parameters and click 'Optimize Route' to find the shortest path.
     """)
