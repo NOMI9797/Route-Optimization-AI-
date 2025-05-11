@@ -5,12 +5,12 @@ import time
 import pandas as pd
 from typing import List, Tuple
 
-# Add src directory to path
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from genetic_algorithm import GeneticAlgorithm
-from route_utils import load_cities, calculate_total_distance
-from visualization import save_route_plot, save_fitness_plot
+from src.genetic_algorithm import GeneticAlgorithm
+from src.route_utils import load_cities, calculate_total_distance
+from src.visualization import save_route_plot, save_fitness_plot
 
 def main():
     st.title("Route Optimization using Genetic Algorithm")
