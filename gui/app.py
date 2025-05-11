@@ -13,6 +13,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.genetic_algorithm import GeneticAlgorithm
 from src.route_utils import load_cities, calculate_total_distance
 from src.visualization import save_route_plot, save_fitness_plot
+from src.real_distance import get_distance_matrix
+
+def calculate_route_distance(route, distance_matrix):
+    total = 0
+    for i in range(len(route)):
+        total += distance_matrix[route[i]][route[(i+1)%len(route)]]
+    return total
 
 def main():
     st.title("Route Optimization using Genetic Algorithm")
@@ -26,6 +33,9 @@ def main():
     # File uploader
     uploaded_file = st.sidebar.file_uploader("Upload Cities CSV", type=['csv'])
     use_example = st.sidebar.button("Use Example Dataset")
+    
+    # API Key input (pre-filled for demo)
+    api_key = st.sidebar.text_input("OpenRouteService API Key", value="5b3ce3597851110001cf6248eba90df2cf024c91bf92b1e39b06212b")
     
     # GA Parameters
     st.sidebar.subheader("Genetic Algorithm Parameters")
@@ -79,10 +89,22 @@ def main():
 
     # --- Load cities from uploaded file, example, or default ---
     cities = None
+    use_real_distance = False
+    distance_matrix = None
     if st.session_state['map_cities']:
         # Use cities from map if present
         cities = [(city['name'], city['lat'], city['lon']) for city in st.session_state['map_cities']]
         st.info(f"Using {len(cities)} cities from the interactive map.")
+        # Prepare coordinates for ORS (lon, lat)
+        coords = [[city[2], city[1]] for city in cities]
+        if api_key:
+            try:
+                with st.spinner("Fetching real-world distance matrix from OpenRouteService..."):
+                    distance_matrix = get_distance_matrix(coords, api_key)
+                    use_real_distance = True
+                    st.success("Fetched real-world distance matrix!")
+            except Exception as e:
+                st.warning(f"Could not fetch real-world distances: {e}. Falling back to geodesic distance.")
     elif uploaded_file is not None and not use_example:
         with open('data/cities.csv', 'wb') as f:
             f.write(uploaded_file.getvalue())
@@ -114,12 +136,20 @@ def main():
                     tournament_size=3
                 )
                 start_time = time.time()
-                best_route, best_distance, performance_history = ga.optimize(
-                    cities=cities,
-                    pop_size=pop_size,
-                    generations=generations,
-                    fitness_func=calculate_total_distance
-                )
+                if use_real_distance and distance_matrix is not None:
+                    best_route, best_distance, performance_history = ga.optimize(
+                        cities=cities,
+                        pop_size=pop_size,
+                        generations=generations,
+                        fitness_func=lambda route, _: calculate_route_distance(route, distance_matrix)
+                    )
+                else:
+                    best_route, best_distance, performance_history = ga.optimize(
+                        cities=cities,
+                        pop_size=pop_size,
+                        generations=generations,
+                        fitness_func=calculate_total_distance
+                    )
                 time_taken = time.time() - start_time
                 save_route_plot(best_route, cities)
                 save_fitness_plot(performance_history)
