@@ -13,7 +13,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.genetic_algorithm import GeneticAlgorithm
 from src.route_utils import load_cities, calculate_total_distance
 from src.visualization import save_route_plot, save_fitness_plot
-from src.real_distance import get_distance_matrix
+from src.real_distance import get_distance_matrix, get_route_geometry
 from src.analytics import calculate_analytics
 
 def calculate_route_distance(route, distance_matrix):
@@ -160,35 +160,122 @@ def main():
                 time_taken = time.time() - start_time
                 save_route_plot(best_route, cities)
                 save_fitness_plot(performance_history)
-                st.success("Optimization complete!")
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("Total Distance", f"{best_distance:.2f} km")
-                with col2:
-                    st.metric("Time Taken", f"{time_taken:.2f} seconds")
-                # --- Analytics Calculation and Display ---
                 analytics = calculate_analytics(
                     total_distance=best_distance,
                     avg_speed=avg_speed,
                     fuel_efficiency=fuel_efficiency,
                     fuel_price=fuel_price
                 )
-                st.write("### Route Analytics")
-                st.write(f"**Total Distance:** {analytics['total_distance']:.2f} km")
-                st.write(f"**Estimated Time:** {analytics['estimated_time']:.2f} hours")
-                st.write(f"**Fuel Consumption:** {analytics['fuel_consumption']:.2f} liters")
-                st.write(f"**Estimated Cost:** ${analytics['estimated_cost']:.2f}")
-                st.write("### Optimized Route")
-                st.image("results/best_route.png")
-                with open("results/best_route.png", "rb") as f:
-                    st.download_button("Download Route Map", f, file_name="best_route.png")
-                st.write("### Optimization Progress")
-                st.image("results/fitness_plot.png")
-                with open("results/fitness_plot.png", "rb") as f:
-                    st.download_button("Download Fitness Plot", f, file_name="fitness_plot.png")
-                st.write("### Route Details")
-                route_cities = [cities[i][0] for i in best_route]
-                st.write(" → ".join(route_cities))
+                # Store results in session state
+                st.session_state['best_route'] = best_route
+                st.session_state['best_distance'] = best_distance
+                st.session_state['performance_history'] = performance_history
+                st.session_state['cities'] = cities
+                st.session_state['analytics'] = analytics
+                st.session_state['time_taken'] = time_taken
+                st.session_state['route_just_optimized'] = True
+
+        # Show results if available in session state
+        if 'best_route' in st.session_state and st.session_state['best_route'] is not None:
+            best_route = st.session_state['best_route']
+            best_distance = st.session_state['best_distance']
+            performance_history = st.session_state['performance_history']
+            cities = st.session_state['cities']
+            analytics = st.session_state['analytics']
+            time_taken = st.session_state.get('time_taken', None)
+            st.success("Optimization complete!")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Total Distance", f"{best_distance:.2f} km")
+            with col2:
+                if time_taken is not None:
+                    st.metric("Time Taken", f"{time_taken:.2f} seconds")
+            st.write("### Route Analytics")
+            st.write(f"**Total Distance:** {analytics['total_distance']:.2f} km")
+            st.write(f"**Estimated Time:** {analytics['estimated_time']:.2f} hours")
+            st.write(f"**Fuel Consumption:** {analytics['fuel_consumption']:.2f} liters")
+            st.write(f"**Estimated Cost:** ${analytics['estimated_cost']:.2f}")
+            st.write("### Interactive Route Map")
+            # Create a new Folium map centered on the mean location
+            mean_lat = sum(city[1] for city in cities) / len(cities)
+            mean_lon = sum(city[2] for city in cities) / len(cities)
+            route_map = folium.Map(location=[mean_lat, mean_lon], zoom_start=5)
+
+            # Draw all possible connections (network)
+            for i in range(len(cities)):
+                for j in range(i + 1, len(cities)):
+                    folium.PolyLine(
+                        locations=[(cities[i][1], cities[i][2]), (cities[j][1], cities[j][2])],
+                        color='gray',
+                        weight=1,
+                        opacity=0.3
+                    ).add_to(route_map)
+
+            # Draw the optimized route (real driving route if possible)
+            if use_real_distance and api_key:
+                for idx in range(len(best_route)):
+                    start_idx = best_route[idx]
+                    end_idx = best_route[(idx + 1) % len(best_route)]
+                    coord_from = [cities[start_idx][2], cities[start_idx][1]]  # [lon, lat]
+                    coord_to = [cities[end_idx][2], cities[end_idx][1]]
+                    try:
+                        geometry = get_route_geometry(coord_from, coord_to, api_key)
+                        folium.PolyLine(
+                            locations=geometry,
+                            color='red',
+                            weight=5,
+                            opacity=0.8
+                        ).add_to(route_map)
+                    except Exception as e:
+                        # Fallback to straight line if API fails
+                        folium.PolyLine(
+                            locations=[(cities[start_idx][1], cities[start_idx][2]), (cities[end_idx][1], cities[end_idx][2])],
+                            color='red',
+                            weight=5,
+                            opacity=0.8
+                        ).add_to(route_map)
+            else:
+                # Fallback: straight lines
+                route_coords = [(cities[i][1], cities[i][2]) for i in best_route] + [(cities[best_route[0]][1], cities[best_route[0]][2])]
+                folium.PolyLine(
+                    locations=route_coords,
+                    color='red',
+                    weight=5,
+                    opacity=0.8
+                ).add_to(route_map)
+
+            # Highlight cities in the optimized route
+            for idx, i in enumerate(best_route):
+                folium.CircleMarker(
+                    location=(cities[i][1], cities[i][2]),
+                    radius=8,
+                    color='blue',
+                    fill=True,
+                    fill_color='yellow',
+                    fill_opacity=0.9,
+                    popup=f"{cities[i][0]} (Stop {idx+1})"
+                ).add_to(route_map)
+
+            # Add city names for all cities
+            for city in cities:
+                folium.Marker(
+                    location=(city[1], city[2]),
+                    popup=city[0],
+                    icon=folium.Icon(color='gray', icon='info-sign')
+                ).add_to(route_map)
+
+            st_folium(route_map, width=700, height=500)
+            st.write("### Optimized Route")
+            st.image("results/best_route.png")
+            with open("results/best_route.png", "rb") as f:
+                st.download_button("Download Route Map", f, file_name="best_route.png")
+            st.write("### Optimization Progress")
+            st.image("results/fitness_plot.png")
+            with open("results/fitness_plot.png", "rb") as f:
+                st.download_button("Download Fitness Plot", f, file_name="fitness_plot.png")
+            st.write("### Route Details")
+            route_cities = [cities[i][0] for i in best_route]
+            st.write(" → ".join(route_cities))
     else:
         st.info("Please upload a CSV file with city data (columns: city, latitude, longitude), use the example dataset, or add cities on the map above.")
 
