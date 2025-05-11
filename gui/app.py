@@ -20,6 +20,9 @@ from src.route_utils import load_cities, calculate_total_distance
 from src.visualization import save_route_plot, save_fitness_plot
 from src.real_distance import get_distance_matrix, get_route_geometry
 from src.analytics import calculate_analytics
+from gui.city_io import load_cities_from_csv, load_cities_from_session
+from gui.clustering import cluster_cities
+from gui.route_solver import solve_intra_cluster_routes, solve_inter_cluster_route, combine_cluster_routes
 
 def calculate_route_distance(route, distance_matrix):
     total = 0
@@ -123,7 +126,7 @@ def main():
     distance_matrix = None
     if st.session_state['map_cities']:
         # Use cities from map if present
-        cities = [(city['name'], city['lat'], city['lon']) for city in st.session_state['map_cities']]
+        cities = load_cities_from_session(st.session_state['map_cities'])
         st.info(f"Using {len(cities)} cities from the interactive map.")
         # Prepare coordinates for ORS (lon, lat)
         coords = [[city[2], city[1]] for city in cities]
@@ -139,20 +142,20 @@ def main():
         with open('data/cities.csv', 'wb') as f:
             f.write(uploaded_file.getvalue())
         try:
-            cities = load_cities('data/cities.csv')
+            cities = load_cities_from_csv('data/cities.csv')
             st.sidebar.success(f"Successfully loaded {len(cities)} cities!")
         except Exception as e:
             st.error(f"Error loading cities: {str(e)}")
     elif use_example:
         try:
-            cities = load_cities('data/cities.csv')
+            cities = load_cities_from_csv('data/cities.csv')
             st.sidebar.info(f"Example dataset loaded with {len(cities)} cities.")
         except Exception as e:
             st.error("Example dataset not found or invalid.")
     else:
         # Try to load default dataset (for backward compatibility)
         try:
-            cities = load_cities('data/cities.csv')
+            cities = load_cities_from_csv('data/cities.csv')
             st.sidebar.info(f"Using default dataset with {len(cities)} cities.")
         except Exception as e:
             st.warning("No valid dataset found. Please upload a CSV file or use the example dataset.")
@@ -164,14 +167,11 @@ def main():
         cluster_centers = None
         if use_clustering and len(cities) >= n_clusters:
             # Prepare data for clustering
-            coords = [[city[1], city[2]] for city in cities]  # [lat, lon]
-            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-            cluster_labels = kmeans.fit_predict(coords)
-            cluster_centers = kmeans.cluster_centers_
+            cluster_labels, cluster_centers = cluster_cities(cities, n_clusters)
             # Group cities by cluster
             clustered_cities = [[] for _ in range(n_clusters)]
             for idx, label in enumerate(cluster_labels):
-                clustered_cities[label].append((cities[idx][0], cities[idx][1], cities[idx][2]))
+                clustered_cities[label].append(cities[idx])
             st.info(f"Cities clustered into {n_clusters} groups. Each cluster will be optimized separately, then clusters will be connected.")
         if st.button("Optimize Route"):
             with st.spinner("Optimizing route..."):
@@ -182,42 +182,13 @@ def main():
                 start_time = time.time()
                 if use_clustering and clustered_cities is not None and len(clustered_cities) == n_clusters:
                     # 1. Solve TSP within each cluster
-                    intra_routes = []
-                    intra_distances = []
-                    intra_analytics = []
-                    for cluster in clustered_cities:
-                        if len(cluster) == 1:
-                            intra_routes.append([0])
-                            intra_distances.append(0)
-                            intra_analytics.append(calculate_analytics(0, avg_speed, fuel_efficiency, fuel_price))
-                        else:
-                            route, dist, _ = ga.optimize(
-                                cities=cluster,
-                                pop_size=pop_size,
-                                generations=generations,
-                                fitness_func=calculate_total_distance
-                            )
-                            intra_routes.append(route)
-                            intra_distances.append(dist)
-                            intra_analytics.append(calculate_analytics(dist, avg_speed, fuel_efficiency, fuel_price))
+                    intra_routes, intra_distances = solve_intra_cluster_routes(clustered_cities, pop_size, generations)
+                    intra_analytics = [calculate_analytics(dist, avg_speed, fuel_efficiency, fuel_price) for dist in intra_distances]
                     # 2. Solve TSP between cluster centroids
                     centroids = [(f"Cluster {i+1}", cluster_centers[i][0], cluster_centers[i][1]) for i in range(n_clusters)]
-                    inter_route, inter_dist, _ = ga.optimize(
-                        cities=centroids,
-                        pop_size=pop_size,
-                        generations=generations,
-                        fitness_func=calculate_total_distance
-                    )
+                    inter_route, inter_dist = solve_inter_cluster_route(centroids, pop_size, generations)
                     # 3. Combine intra-cluster routes in inter-cluster order
-                    full_route = []
-                    cluster_city_indices = []
-                    for cluster_idx in inter_route:
-                        cluster = clustered_cities[cluster_idx]
-                        route = intra_routes[cluster_idx]
-                        # Map intra-cluster route indices to global city indices
-                        global_indices = [cities.index(cluster[i]) for i in route]
-                        full_route.extend(global_indices)
-                        cluster_city_indices.append(global_indices)
+                    full_route = combine_cluster_routes(inter_route, intra_routes, clustered_cities, cities)
                     # 4. Calculate total distance for the full route
                     if use_real_distance and distance_matrix is not None:
                         best_distance = calculate_route_distance(full_route, distance_matrix)
