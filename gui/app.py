@@ -5,17 +5,17 @@ import time
 import pandas as pd
 from typing import List, Tuple
 
-# Add src directory to path
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from genetic_algorithm import GeneticAlgorithm
-from route_utils import load_cities, calculate_total_distance
-from visualization import save_route_plot, save_fitness_plot
+from src.genetic_algorithm import GeneticAlgorithm
+from src.route_utils import load_cities, calculate_total_distance
+from src.visualization import save_route_plot, save_fitness_plot
 
 def main():
     st.title("Route Optimization using Genetic Algorithm")
     st.write("""
-    Upload a CSV file with columns: `city,latitude,longitude` or use the default dataset. Adjust the parameters and click 'Optimize Route' to find the shortest path.
+    Upload a CSV file with columns: `city,latitude,longitude` or use the example dataset. Adjust the parameters and click 'Optimize Route' to find the shortest path.
     """)
     
     # Sidebar for parameters
@@ -23,6 +23,7 @@ def main():
     
     # File uploader
     uploaded_file = st.sidebar.file_uploader("Upload Cities CSV", type=['csv'])
+    use_example = st.sidebar.button("Use Example Dataset")
     
     # GA Parameters
     st.sidebar.subheader("Genetic Algorithm Parameters")
@@ -48,9 +49,9 @@ def main():
         step=50
     )
 
-    # Load cities from uploaded file or default
+    # Load cities from uploaded file, example, or default
     cities = None
-    if uploaded_file is not None:
+    if uploaded_file is not None and not use_example:
         with open('data/cities.csv', 'wb') as f:
             f.write(uploaded_file.getvalue())
         try:
@@ -58,13 +59,19 @@ def main():
             st.sidebar.success(f"Successfully loaded {len(cities)} cities!")
         except Exception as e:
             st.error(f"Error loading cities: {str(e)}")
+    elif use_example:
+        try:
+            cities = load_cities('data/cities.csv')
+            st.sidebar.info(f"Example dataset loaded with {len(cities)} cities.")
+        except Exception as e:
+            st.error("Example dataset not found or invalid.")
     else:
-        # Try to load default dataset
+        # Try to load default dataset (for backward compatibility)
         try:
             cities = load_cities('data/cities.csv')
             st.sidebar.info(f"Using default dataset with {len(cities)} cities.")
         except Exception as e:
-            st.warning("No valid dataset found. Please upload a CSV file.")
+            st.warning("No valid dataset found. Please upload a CSV file or use the example dataset.")
 
     if cities:
         st.write("### Route Optimization")
@@ -102,7 +109,7 @@ def main():
                 route_cities = [cities[i][0] for i in best_route]
                 st.write(" → ".join(route_cities))
     else:
-        st.info("Please upload a CSV file with city data (columns: city, latitude, longitude)")
+        st.info("Please upload a CSV file with city data (columns: city, latitude, longitude) or use the example dataset.")
 
 if __name__ == "__main__":
     main() 
